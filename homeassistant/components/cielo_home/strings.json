@@ -3,7 +3,12 @@
     "step": {
       "user": {
         "data": {
-          "access_token": "[%key:common::config_flow::data::access_token%]"
+          "access_token": "[%key:common::config_flow::data::access_token%]",
+          "refresh_token": "refresh_token",
+          "session_id": "session_id",
+          "user_id": "user_id",
+          "force_connection_source": "force_connection_source",
+          "connection_source": "connection_source"
         }
       }
     },

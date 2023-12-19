@@ -820,6 +820,12 @@
         }
       }
     },
+    "cielo_home": {
+      "name": "Cielo Home",
+      "integration_type": "hub",
+      "config_flow": true,
+      "iot_class": "cloud_polling"
+    },
     "citybikes": {
       "name": "CityBikes",
       "integration_type": "hub",
