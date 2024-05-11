@@ -81,12 +81,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         async_create_issue(
             hass,
             DOMAIN,
-            f"deprecated_yaml_import_issue_${result['reason']}",
+            f"deprecated_yaml_import_issue_{result['reason']}",
             breaks_in_ha_version="2024.7.0",
             is_fixable=False,
             issue_domain=DOMAIN,
             severity=IssueSeverity.WARNING,
-            translation_key=f"deprecated_yaml_import_issue_${result['reason']}",
+            translation_key=f"deprecated_yaml_import_issue_{result['reason']}",
             translation_placeholders=ISSUE_PLACEHOLDER,
         )
     return True
@@ -107,9 +107,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def set_away_mode(service: ServiceCall) -> None:
         """Set the StreamLabsWater Away Mode."""
         away_mode = service.data.get(ATTR_AWAY_MODE)
-        location_id = (
-            service.data.get(CONF_LOCATION_ID) or list(coordinator.data.values())[0]
-        )
+        location_id = service.data.get(CONF_LOCATION_ID) or list(coordinator.data)[0]
         client.update_location(location_id, away_mode)
 
     hass.services.async_register(

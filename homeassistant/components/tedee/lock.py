@@ -1,4 +1,5 @@
 """Tedee lock entities."""
+
 from typing import Any
 
 from pytedee_async import TedeeClientException, TedeeLock, TedeeLockState
@@ -28,6 +29,15 @@ async def async_setup_entry(
             entities.append(TedeeLockWithLatchEntity(lock, coordinator))
         else:
             entities.append(TedeeLockEntity(lock, coordinator))
+
+    def _async_add_new_lock(lock_id: int) -> None:
+        lock = coordinator.data[lock_id]
+        if lock.is_enabled_pullspring:
+            async_add_entities([TedeeLockWithLatchEntity(lock, coordinator)])
+        else:
+            async_add_entities([TedeeLockEntity(lock, coordinator)])
+
+    coordinator.new_lock_callbacks.append(_async_add_new_lock)
 
     async_add_entities(entities)
 
@@ -80,7 +90,7 @@ class TedeeLockEntity(TedeeEntity, LockEntity):
             await self.coordinator.async_request_refresh()
         except (TedeeClientException, Exception) as ex:
             raise HomeAssistantError(
-                "Failed to unlock the door. Lock %s" % self._lock.lock_id
+                f"Failed to unlock the door. Lock {self._lock.lock_id}"
             ) from ex
 
     async def async_lock(self, **kwargs: Any) -> None:
@@ -93,7 +103,7 @@ class TedeeLockEntity(TedeeEntity, LockEntity):
             await self.coordinator.async_request_refresh()
         except (TedeeClientException, Exception) as ex:
             raise HomeAssistantError(
-                "Failed to lock the door. Lock %s" % self._lock.lock_id
+                f"Failed to lock the door. Lock {self._lock.lock_id}"
             ) from ex
 
 
@@ -115,5 +125,5 @@ class TedeeLockWithLatchEntity(TedeeLockEntity):
             await self.coordinator.async_request_refresh()
         except (TedeeClientException, Exception) as ex:
             raise HomeAssistantError(
-                "Failed to unlatch the door. Lock %s" % self._lock.lock_id
+                f"Failed to unlatch the door. Lock {self._lock.lock_id}"
             ) from ex

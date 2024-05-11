@@ -1,4 +1,5 @@
 """Sensor entity for a Rainforest RAVEn device."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,11 +28,11 @@ from .const import DOMAIN
 from .coordinator import RAVEnDataCoordinator
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class RAVEnSensorEntityDescription(SensorEntityDescription):
     """A class that describes RAVEn sensor entities."""
 
-    message_key: str | None = None
+    message_key: str
     attribute_keys: list[str] | None = None
 
 
@@ -70,7 +71,6 @@ DIAGNOSTICS = (
         key="link_strength",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:wifi",
         entity_category=EntityCategory.DIAGNOSTIC,
         attribute_keys=[
             "channel",
@@ -104,7 +104,6 @@ async def async_setup_entry(
                         translation_key="meter_price",
                         key="price",
                         native_unit_of_measurement=f"{meter_data['PriceCluster']['currency'].value}/{UnitOfEnergy.KILO_WATT_HOUR}",
-                        icon="mdi:cash",
                         state_class=SensorStateClass.MEASUREMENT,
                         attribute_keys=[
                             "tier",
