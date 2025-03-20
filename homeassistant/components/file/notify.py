@@ -2,63 +2,49 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Any, TextIO
 
-import voluptuous as vol
-
 from homeassistant.components.notify import (
-    ATTR_TITLE,
     ATTR_TITLE_DEFAULT,
-    PLATFORM_SCHEMA,
-    BaseNotificationService,
+    NotifyEntity,
+    NotifyEntityFeature,
 )
-from homeassistant.const import CONF_FILE_PATH, CONF_FILENAME
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_FILE_PATH, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-import homeassistant.util.dt as dt_util
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
-from .const import CONF_TIMESTAMP, DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
-
-# The legacy platform schema uses a filename, after import
-# The full file path is stored in the config entry
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_FILENAME): cv.string,
-        vol.Optional(CONF_TIMESTAMP, default=False): cv.boolean,
-    }
-)
+from .const import CONF_TIMESTAMP, DEFAULT_NAME, DOMAIN, FILE_ICON
 
 
-async def async_get_service(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
-    discovery_info: DiscoveryInfoType | None = None,
-) -> FileNotificationService | None:
-    """Get the file notification service."""
-    if discovery_info is None:
-        # We only set up through discovery
-        return None
-    file_path: str = discovery_info[CONF_FILE_PATH]
-    timestamp: bool = discovery_info[CONF_TIMESTAMP]
-
-    return FileNotificationService(file_path, timestamp)
+    entry: ConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Set up notify entity."""
+    unique_id = entry.entry_id
+    async_add_entities([FileNotifyEntity(unique_id, {**entry.data, **entry.options})])
 
 
-class FileNotificationService(BaseNotificationService):
-    """Implement the notification service for the File service."""
+class FileNotifyEntity(NotifyEntity):
+    """Implement the notification entity platform for the File service."""
 
-    def __init__(self, file_path: str, add_timestamp: bool) -> None:
+    _attr_icon = FILE_ICON
+    _attr_supported_features = NotifyEntityFeature.TITLE
+
+    def __init__(self, unique_id: str, config: dict[str, Any]) -> None:
         """Initialize the service."""
-        self._file_path = file_path
-        self.add_timestamp = add_timestamp
+        self._file_path: str = config[CONF_FILE_PATH]
+        self._add_timestamp: bool = config.get(CONF_TIMESTAMP, False)
+        # Only import a name from an imported entity
+        self._attr_name = config.get(CONF_NAME, DEFAULT_NAME)
+        self._attr_unique_id = unique_id
 
-    def send_message(self, message: str = "", **kwargs: Any) -> None:
+    def send_message(self, message: str, title: str | None = None) -> None:
         """Send a message to a file."""
         file: TextIO
         filepath = self._file_path
@@ -66,17 +52,17 @@ class FileNotificationService(BaseNotificationService):
             with open(filepath, "a", encoding="utf8") as file:
                 if os.stat(filepath).st_size == 0:
                     title = (
-                        f"{kwargs.get(ATTR_TITLE, ATTR_TITLE_DEFAULT)} notifications (Log"
+                        f"{title or ATTR_TITLE_DEFAULT} notifications (Log"
                         f" started: {dt_util.utcnow().isoformat()})\n{'-' * 80}\n"
                     )
                     file.write(title)
 
-                if self.add_timestamp:
+                if self._add_timestamp:
                     text = f"{dt_util.utcnow().isoformat()} {message}\n"
                 else:
                     text = f"{message}\n"
                 file.write(text)
-        except Exception as exc:
+        except OSError as exc:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="write_access_failed",

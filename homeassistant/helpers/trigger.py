@@ -27,11 +27,12 @@ from homeassistant.core import (
     callback,
     is_callback,
 )
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, TemplateError
 from homeassistant.loader import IntegrationNotFound, async_get_integration
 from homeassistant.util.async_ import create_eager_task
 from homeassistant.util.hass_dict import HassKey
 
+from .template import Template
 from .typing import ConfigType, TemplateVarsType
 
 _PLATFORM_ALIASES = {
@@ -224,7 +225,7 @@ async def _async_get_trigger_platform(
     try:
         integration = await async_get_integration(hass, platform)
     except IntegrationNotFound:
-        raise vol.Invalid(f"Invalid platform '{platform}' specified") from None
+        raise vol.Invalid(f"Invalid trigger '{platform}' specified") from None
     try:
         return await integration.async_get_platform("trigger")
     except ImportError:
@@ -264,18 +265,18 @@ def _trigger_action_wrapper(
     while isinstance(check_func, functools.partial):
         check_func = check_func.func
 
-    wrapper_func: Callable[..., None] | Callable[..., Coroutine[Any, Any, None]]
+    wrapper_func: Callable[..., Any] | Callable[..., Coroutine[Any, Any, Any]]
     if asyncio.iscoroutinefunction(check_func):
-        async_action = cast(Callable[..., Coroutine[Any, Any, None]], action)
+        async_action = cast(Callable[..., Coroutine[Any, Any, Any]], action)
 
         @functools.wraps(async_action)
         async def async_with_vars(
             run_variables: dict[str, Any], context: Context | None = None
-        ) -> None:
+        ) -> Any:
             """Wrap action with extra vars."""
             trigger_variables = conf[CONF_VARIABLES]
             run_variables.update(trigger_variables.async_render(hass, run_variables))
-            await action(run_variables, context)
+            return await action(run_variables, context)
 
         wrapper_func = async_with_vars
 
@@ -284,11 +285,11 @@ def _trigger_action_wrapper(
         @functools.wraps(action)
         async def with_vars(
             run_variables: dict[str, Any], context: Context | None = None
-        ) -> None:
+        ) -> Any:
             """Wrap action with extra vars."""
             trigger_variables = conf[CONF_VARIABLES]
             run_variables.update(trigger_variables.async_render(hass, run_variables))
-            action(run_variables, context)
+            return action(run_variables, context)
 
         if is_callback(check_func):
             with_vars = callback(with_vars)
@@ -312,8 +313,16 @@ async def async_initialize_triggers(
     triggers: list[asyncio.Task[CALLBACK_TYPE]] = []
     for idx, conf in enumerate(trigger_config):
         # Skip triggers that are not enabled
-        if not conf.get(CONF_ENABLED, True):
-            continue
+        if CONF_ENABLED in conf:
+            enabled = conf[CONF_ENABLED]
+            if isinstance(enabled, Template):
+                try:
+                    enabled = enabled.async_render(variables, limited=True)
+                except TemplateError as err:
+                    log_cb(logging.ERROR, f"Error rendering enabled template: {err}")
+                    continue
+            if not enabled:
+                continue
 
         platform = await _async_get_trigger_platform(hass, conf)
         trigger_id = conf.get(CONF_ID, f"{idx}")

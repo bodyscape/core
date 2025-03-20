@@ -16,10 +16,10 @@ from typing import Any, Final, TypedDict
 
 from . import config as conf_util, core, loader, requirements
 from .const import (
+    BASE_PLATFORMS,  # noqa: F401
     EVENT_COMPONENT_LOADED,
     EVENT_HOMEASSISTANT_START,
     PLATFORM_FORMAT,
-    Platform,
 )
 from .core import (
     CALLBACK_TYPE,
@@ -29,7 +29,7 @@ from .core import (
     callback,
 )
 from .exceptions import DependencyError, HomeAssistantError
-from .helpers import singleton, translation
+from .helpers import issue_registry as ir, singleton, translation
 from .helpers.issue_registry import IssueSeverity, async_create_issue
 from .helpers.typing import ConfigType
 from .util.async_ import create_eager_task
@@ -44,7 +44,6 @@ _LOGGER = logging.getLogger(__name__)
 
 ATTR_COMPONENT: Final = "component"
 
-BASE_PLATFORMS = {platform.value for platform in Platform}
 
 # DATA_SETUP is a dict, indicating domains which are currently
 # being setup or which failed to setup:
@@ -133,7 +132,13 @@ def async_set_domains_to_be_loaded(hass: core.HomeAssistant, domains: set[str]) 
      - Keep track of domains which will load but have not yet finished loading
     """
     setup_done_futures = hass.data.setdefault(DATA_SETUP_DONE, {})
-    setup_done_futures.update({domain: hass.loop.create_future() for domain in domains})
+    setup_futures = hass.data.setdefault(DATA_SETUP, {})
+    old_domains = set(setup_futures) | set(setup_done_futures) | hass.config.components
+    if overlap := old_domains & domains:
+        _LOGGER.debug("Domains to be loaded %s already loaded or pending", overlap)
+    setup_done_futures.update(
+        {domain: hass.loop.create_future() for domain in domains - old_domains}
+    )
 
 
 def setup_component(hass: core.HomeAssistant, domain: str, config: ConfigType) -> bool:
@@ -202,6 +207,7 @@ async def _async_process_dependencies(
         or create_eager_task(
             async_setup_component(hass, dep, config),
             name=f"setup {dep} as dependency of {integration.domain}",
+            loop=hass.loop,
         )
         for dep in integration.dependencies
         if dep not in hass.config.components
@@ -281,6 +287,20 @@ async def _async_setup_component(
         integration = await loader.async_get_integration(hass, domain)
     except loader.IntegrationNotFound:
         _log_error_setup_error(hass, domain, None, "Integration not found.")
+        if not hass.config.safe_mode and hass.config_entries.async_entries(domain):
+            ir.async_create_issue(
+                hass,
+                HOMEASSISTANT_DOMAIN,
+                f"integration_not_found.{domain}",
+                is_fixable=True,
+                issue_domain=HOMEASSISTANT_DOMAIN,
+                severity=IssueSeverity.ERROR,
+                translation_key="integration_not_found",
+                translation_placeholders={
+                    "domain": domain,
+                },
+                data={"domain": domain},
+            )
         return False
 
     log_error = partial(_log_error_setup_error, hass, domain, integration)
@@ -300,10 +320,10 @@ async def _async_setup_component(
         # If for some reason the background task in bootstrap was too slow
         # or the integration was added after bootstrap, we will load them here.
         load_translations_task = create_eager_task(
-            translation.async_load_integrations(hass, integration_set)
+            translation.async_load_integrations(hass, integration_set), loop=hass.loop
         )
     # Validate all dependencies exist and there are no circular dependencies
-    if not await integration.resolve_dependencies():
+    if await integration.resolve_dependencies() is None:
         return False
 
     # Process requirements as soon as possible, so we can import the component
@@ -411,8 +431,8 @@ async def _async_setup_component(
             )
             return False
         # pylint: disable-next=broad-except
-        except (asyncio.CancelledError, SystemExit, Exception):
-            _LOGGER.exception("Error during setup of component %s", domain)
+        except (asyncio.CancelledError, SystemExit, Exception) as exc:
+            _LOGGER.exception("Error during setup of component %s: %s", domain, exc)  # noqa: TRY401
             async_notify_setup_error(hass, domain, integration.documentation)
             return False
         finally:
@@ -448,7 +468,11 @@ async def _async_setup_component(
             *(
                 create_eager_task(
                     entry.async_setup_locked(hass, integration=integration),
-                    name=f"config entry setup {entry.title} {entry.domain} {entry.entry_id}",
+                    name=(
+                        f"config entry setup {entry.title} {entry.domain} "
+                        f"{entry.entry_id}"
+                    ),
+                    loop=hass.loop,
                 )
                 for entry in entries
             )
@@ -632,15 +656,7 @@ def _async_when_setup(
 @core.callback
 def async_get_loaded_integrations(hass: core.HomeAssistant) -> set[str]:
     """Return the complete list of loaded integrations."""
-    integrations = set()
-    for component in hass.config.components:
-        if "." not in component:
-            integrations.add(component)
-            continue
-        platform, _, domain = component.partition(".")
-        if domain in BASE_PLATFORMS:
-            integrations.add(platform)
-    return integrations
+    return hass.config.all_components
 
 
 class SetupPhases(StrEnum):
@@ -678,9 +694,7 @@ def _setup_started(
 
 
 @contextlib.contextmanager
-def async_pause_setup(
-    hass: core.HomeAssistant, phase: SetupPhases
-) -> Generator[None, None, None]:
+def async_pause_setup(hass: core.HomeAssistant, phase: SetupPhases) -> Generator[None]:
     """Keep track of time we are blocked waiting for other operations.
 
     We want to count the time we wait for importing and
@@ -728,7 +742,7 @@ def async_start_setup(
     integration: str,
     phase: SetupPhases,
     group: str | None = None,
-) -> Generator[None, None, None]:
+) -> Generator[None]:
     """Keep track of when setup starts and finishes.
 
     :param hass: Home Assistant instance
@@ -806,3 +820,11 @@ def async_get_setup_timings(hass: core.HomeAssistant) -> dict[str, float]:
         domain_timings[domain] = total_top_level + group_max
 
     return domain_timings
+
+
+@callback
+def async_get_domain_setup_times(
+    hass: core.HomeAssistant, domain: str
+) -> Mapping[str | None, dict[SetupPhases, float]]:
+    """Return timing data for each integration."""
+    return _setup_times(hass).get(domain, {})

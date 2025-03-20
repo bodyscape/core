@@ -1,71 +1,21 @@
 """The file component."""
 
-from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
-from homeassistant.const import CONF_FILE_PATH, CONF_PLATFORM, Platform
-from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
+from copy import deepcopy
+from typing import Any
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_FILE_PATH, CONF_NAME, CONF_PLATFORM, Platform
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import (
-    config_validation as cv,
-    discovery,
-    issue_registry as ir,
-)
-from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
 
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-
-PLATFORMS = [Platform.SENSOR]
-
-YAML_PLATFORMS = [Platform.NOTIFY, Platform.SENSOR]
-
-
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the file integration."""
-
-    if hass.config_entries.async_entries(DOMAIN):
-        # We skip import in case we already have config entries
-        return True
-    # The YAML config was imported with HA Core 2024.6.0 and will be removed with
-    # HA Core 2024.12
-    ir.async_create_issue(
-        hass,
-        HOMEASSISTANT_DOMAIN,
-        f"deprecated_yaml_{DOMAIN}",
-        breaks_in_ha_version="2024.12.0",
-        is_fixable=False,
-        issue_domain=DOMAIN,
-        learn_more_url="https://www.home-assistant.io/integrations/file/",
-        severity=ir.IssueSeverity.WARNING,
-        translation_key="deprecated_yaml",
-        translation_placeholders={
-            "domain": DOMAIN,
-            "integration_title": "File",
-        },
-    )
-
-    # Import the YAML config into separate config entries
-    platforms_config = {
-        domain: config[domain] for domain in YAML_PLATFORMS if domain in config
-    }
-    for domain, items in platforms_config.items():
-        for item in items:
-            if item[CONF_PLATFORM] == DOMAIN:
-                item[CONF_PLATFORM] = domain
-                hass.async_create_task(
-                    hass.config_entries.flow.async_init(
-                        DOMAIN,
-                        context={"source": SOURCE_IMPORT},
-                        data=item,
-                    )
-                )
-
-    return True
+PLATFORMS = [Platform.NOTIFY, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a file component entry."""
-    config = dict(entry.data)
+    config = {**entry.data, **entry.options}
     filepath: str = config[CONF_FILE_PATH]
     if filepath and not await hass.async_add_executor_job(
         hass.config.is_allowed_path, filepath
@@ -76,23 +26,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             translation_placeholders={"filename": filepath},
         )
 
-    if entry.data[CONF_PLATFORM] in PLATFORMS:
-        await hass.config_entries.async_forward_entry_setups(
-            entry, [Platform(entry.data[CONF_PLATFORM])]
-        )
-    else:
-        # The notify platform is not yet set up as entry, so
-        # forward setup config through discovery to ensure setup notify service.
-        # This is needed as long as the legacy service is not migrated
-        hass.async_create_task(
-            discovery.async_load_platform(
-                hass,
-                Platform.NOTIFY,
-                DOMAIN,
-                config,
-                {},
-            )
-        )
+    await hass.config_entries.async_forward_entry_setups(
+        entry, [Platform(entry.data[CONF_PLATFORM])]
+    )
+    entry.async_on_unload(entry.add_update_listener(update_listener))
 
     return True
 
@@ -102,3 +39,29 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return await hass.config_entries.async_unload_platforms(
         entry, [entry.data[CONF_PLATFORM]]
     )
+
+
+async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options update."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """Migrate config entry."""
+    if config_entry.version > 2:
+        # Downgraded from future
+        return False
+
+    if config_entry.version < 2:
+        # Move optional fields from data to options in config entry
+        data: dict[str, Any] = deepcopy(dict(config_entry.data))
+        options = {}
+        for key, value in config_entry.data.items():
+            if key not in (CONF_FILE_PATH, CONF_PLATFORM, CONF_NAME):
+                data.pop(key)
+                options[key] = value
+
+        hass.config_entries.async_update_entry(
+            config_entry, version=2, data=data, options=options
+        )
+    return True

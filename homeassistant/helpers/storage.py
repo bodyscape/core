@@ -6,13 +6,14 @@ import asyncio
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from copy import deepcopy
-from functools import cached_property
 import inspect
 from json import JSONDecodeError, JSONEncoder
 import logging
 import os
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any
+
+from propcache.api import cached_property
 
 from homeassistant.const import (
     EVENT_HOMEASSISTANT_FINAL_WRITE,
@@ -29,8 +30,7 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.loader import bind_hass
-from homeassistant.util import json as json_util
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util, json as json_util
 from homeassistant.util.file import WriteError
 from homeassistant.util.hass_dict import HassKey
 
@@ -48,11 +48,9 @@ STORAGE_MANAGER: HassKey[_StoreManager] = HassKey("storage_manager")
 
 MANAGER_CLEANUP_DELAY = 60
 
-_T = TypeVar("_T", bound=Mapping[str, Any] | Sequence[Any])
-
 
 @bind_hass
-async def async_migrator(
+async def async_migrator[_T: Mapping[str, Any] | Sequence[Any]](
     hass: HomeAssistant,
     old_path: str,
     store: Store[_T],
@@ -229,7 +227,7 @@ class _StoreManager:
 
 
 @bind_hass
-class Store(Generic[_T]):
+class Store[_T: Mapping[str, Any] | Sequence[Any]]:
     """Class to help storing data."""
 
     def __init__(
@@ -265,6 +263,13 @@ class Store(Generic[_T]):
     def path(self):
         """Return the config path."""
         return self.hass.config.path(STORAGE_DIR, self.key)
+
+    def make_read_only(self) -> None:
+        """Make the store read-only.
+
+        This method is irreversible.
+        """
+        self._read_only = True
 
     async def async_load(self) -> _T | None:
         """Load data.
